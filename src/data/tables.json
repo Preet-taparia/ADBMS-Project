@@ -1,0 +1,123 @@
+{
+  "zones": {
+    "cols": ["zone_id","zone_name","boundary"],
+    "types": ["BIGINT","VARCHAR(150)","GEOGRAPHY(MultiPolygon)"],
+    "rows": [
+      [1,"North Zone","MULTIPOLYGON"],
+      [2,"South Zone","MULTIPOLYGON"]
+    ]
+  },
+  "users": {
+    "cols": ["user_id","full_name","phone","current_location"],
+    "types": ["BIGINT","VARCHAR(150)","VARCHAR(30)","GEOGRAPHY(Point)"],
+    "rows": [
+      [1,"Ravi Kumar","9000000001","78.45 17.45"],
+      [2,"Asha Rao","9000000002","78.60 17.30"],
+      [3,"Meena Iyer","9000000003","78.47 17.48"]
+    ]
+  },
+  "user_location_history": {
+    "cols": ["history_id","user_id","location","recorded_at"],
+    "types": ["BIGINT","BIGINT","GEOGRAPHY(Point)","TIMESTAMPTZ"],
+    "rows": [
+      [1,1,"78.44 17.44","2026-11-05 10:05"],
+      [2,1,"78.45 17.45","2026-11-05 10:40"],
+      [3,3,"78.47 17.48","2026-11-05 11:15"]
+    ]
+  },
+  "authority": {
+    "cols": ["authority_id","authority_name","phone","role","assigned_zone_id","current_location","available"],
+    "types": ["BIGINT","VARCHAR(200)","VARCHAR(30)","authority_role","BIGINT","GEOGRAPHY(Point)","BOOLEAN"],
+    "rows": [
+      [1,"Officer A","9000000011","field_officer",1,"78.46 17.46","true"],
+      [2,"Officer B","9000000012","field_officer",2,"78.61 17.31","false"],
+      [3,"Officer C","9000000013","field_officer",1,"78.49 17.52","true"],
+      [4,"Manager D","9000000014","regional_manager",1,"78.50 17.50","true"]
+    ]
+  },
+  "authority_history": {
+    "cols": ["history_id","authority_id","assigned_zone_id","location","available","recorded_at"],
+    "types": ["BIGINT","BIGINT","BIGINT","GEOGRAPHY(Point)","BOOLEAN","TIMESTAMPTZ"],
+    "rows": [
+      [1,1,1,"78.45 17.45","true","2026-11-05 09:00"]
+    ]
+  },
+  "species": {
+    "cols": ["species_id","common_name","scientific_name","threat_level"],
+    "types": ["BIGINT","VARCHAR(150)","VARCHAR(200)","threat_level"],
+    "rows": [
+      [1,"Indian Leopard","Panthera pardus fusca","vulnerable"],
+      [2,"Sloth Bear","Melursus ursinus","vulnerable"],
+      [3,"Bengal Tiger","Panthera tigris tigris","endangered"]
+    ]
+  },
+  "animal": {
+    "cols": ["animal_id","species_id","sex","last_known_location","last_location_updated_at","last_sighting_id"],
+    "types": ["BIGINT","BIGINT","animal_sex","GEOGRAPHY(Point)","TIMESTAMPTZ","BIGINT"],
+    "rows": [
+      [1,1,"male","78.48 17.48","2026-11-05 06:30",3],
+      [2,2,"female","78.90 17.10","2026-09-20 19:05",4],
+      [3,3,"male","78.88 17.12","2026-10-25 05:50",5],
+      [4,1,"female","78.485 17.485","2026-11-06 07:10",6]
+    ]
+  },
+  "sighting": {
+    "cols": ["sighting_id","animal_id","reported_by","zone_id","location","observed_at"],
+    "types": ["BIGINT","BIGINT","BIGINT","BIGINT","GEOGRAPHY(Point)","TIMESTAMPTZ"],
+    "rows": [
+      [1,1,1,1,"78.46 17.46","2026-10-12 05:40"],
+      [2,1,1,1,"78.47 17.47","2026-11-01 18:20"],
+      [3,1,3,1,"78.48 17.48","2026-11-05 06:30"],
+      [4,2,2,2,"78.90 17.10","2026-09-20 19:05"],
+      [5,3,2,2,"78.88 17.12","2026-10-25 05:50"],
+      [6,4,3,1,"78.485 17.485","2026-11-06 07:10"]
+    ]
+  },
+  "incident": {
+    "cols": ["incident_id","reported_by","zone_id","severity","status","location","observed_at","verified_at","verified_by","resolved_at"],
+    "types": ["BIGINT","BIGINT","BIGINT","incident_severity","incident_status","GEOGRAPHY(Point)","TIMESTAMPTZ","TIMESTAMPTZ","BIGINT","TIMESTAMPTZ"],
+    "rows": [
+      [1,1,1,"high","in_progress","78.47 17.47","2026-11-04 21:10","2026-11-04 22:00",1,null],
+      [2,2,2,"low","resolved","78.89 17.11","2026-10-10 11:30","2026-10-10 13:00",2,"2026-10-11 09:30"],
+      [3,1,1,"critical","verified","78.48 17.49","2026-11-06 08:20","2026-11-06 08:45",3,null],
+      [4,3,1,"medium","reported","78.46 17.50","2026-11-05 15:00",null,null,null],
+      [5,2,2,"medium","resolved","78.87 17.13","2026-10-20 07:00","2026-10-20 08:00",2,"2026-10-21 10:00"]
+    ]
+  },
+  "human_wildlife_conflict": {
+    "cols": ["conflict_id","incident_id","animal_id","identified_by","affected_user_id"],
+    "types": ["BIGINT","BIGINT","BIGINT","BIGINT","BIGINT"],
+    "rows": [
+      [1,1,1,1,1],
+      [2,3,1,3,1],
+      [3,5,3,2,2],
+      [4,4,4,4,3]
+    ]
+  },
+  "response_assignment": {
+    "cols": ["assignment_id","incident_id","assigned_to","assigned_at","status","completed_at"],
+    "types": ["BIGINT","BIGINT","BIGINT","TIMESTAMPTZ","response_status","TIMESTAMPTZ"],
+    "rows": [
+      [1,1,1,"2026-11-04 21:30","in_progress",null],
+      [2,3,3,"2026-11-06 08:50","assigned",null],
+      [3,2,2,"2026-10-10 13:30","completed","2026-10-10 17:30"],
+      [4,5,2,"2026-10-20 08:30","completed","2026-10-20 12:00"]
+    ]
+  },
+  "response_action": {
+    "cols": ["action_id","assignment_id","performed_by","action_type","outcome","performed_at"],
+    "types": ["BIGINT","BIGINT","BIGINT","action_type","action_outcome","TIMESTAMPTZ"],
+    "rows": [
+      [1,1,1,"monitoring","pending","2026-11-04 22:15"],
+      [2,3,2,"rescue","successful","2026-10-10 15:00"]
+    ]
+  },
+  "incident_alert": {
+    "cols": ["alert_id","incident_id","user_id","distance_meters","severity","is_read","created_at"],
+    "types": ["BIGINT","BIGINT","BIGINT","NUMERIC(10,2)","incident_severity","BOOLEAN","TIMESTAMPTZ"],
+    "rows": [
+      [1,1,3,1110.38,"high","false","2026-11-04 21:10"],
+      [2,3,3,1536.42,"critical","false","2026-11-06 08:20"]
+    ]
+  }
+}

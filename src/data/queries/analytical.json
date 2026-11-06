@@ -1,0 +1,138 @@
+[
+  {
+    "cat": "Analytical",
+    "title": "Zone risk ranking by incident frequency",
+    "tag": "WINDOW",
+    "sql": [
+      "SELECT z.zone_id, z.zone_name,",
+      "       COUNT(i.incident_id) AS total_incidents,",
+      "       DENSE_RANK() OVER (",
+      "         ORDER BY COUNT(i.incident_id) DESC) AS risk_rank",
+      "FROM zones z",
+      "LEFT JOIN incident i ON i.zone_id = z.zone_id",
+      "GROUP BY z.zone_id, z.zone_name",
+      "ORDER BY risk_rank, z.zone_name;"
+    ],
+    "steps": [
+      { "title": "Left join incidents", "text": "Zones are the preserved side. North Zone matches incidents 1, 3 and 4, and South Zone matches incidents 2 and 5. A zone with no incidents would still appear.", "tables": ["zones", "incident"], "r": { "zones": [1, 2], "incident": [1, 2, 3, 4, 5] }, "c": { "zones": ["zone_id"], "incident": ["zone_id"] }, "f": 5, "h": ["LEFT JOIN incident i"] },
+      { "title": "Count per zone", "text": "COUNT(i.incident_id) ignores NULLs, giving 3 for North Zone and 2 for South Zone.", "tables": ["zones", "incident"], "f": 2, "h": ["COUNT(i.incident_id) AS total_incidents", "GROUP BY z.zone_id"] },
+      { "title": "Rank the groups", "text": "The window runs after grouping. DENSE_RANK gives equal counts the same rank and leaves no gaps, so the busiest zone is rank 1.", "tables": ["zones"], "f": 2, "h": ["DENSE_RANK() OVER", "ORDER BY COUNT(i.incident_id) DESC", "ORDER BY risk_rank"], "res": { "cols": ["zone_id", "zone_name", "total_incidents", "risk_rank"], "rows": [[1, "North Zone", 3, 1], [2, "South Zone", 2, 2]] } }
+    ]
+  },
+  {
+    "cat": "Analytical",
+    "title": "Top species in human-wildlife conflicts",
+    "sql": [
+      "SELECT sp.species_id, sp.common_name, sp.threat_level,",
+      "       COUNT(hwc.conflict_id) AS conflict_count",
+      "FROM human_wildlife_conflict hwc",
+      "JOIN animal a ON a.animal_id = hwc.animal_id",
+      "JOIN species sp ON sp.species_id = a.species_id",
+      "GROUP BY sp.species_id, sp.common_name, sp.threat_level",
+      "ORDER BY conflict_count DESC",
+      "LIMIT 10;"
+    ],
+    "steps": [
+      { "title": "Join conflicts to animals", "text": "All four conflicts have an animal. Conflicts 1 and 2 point to animal 1, conflict 3 to animal 3 and conflict 4 to animal 4. Rows with a NULL animal_id would be dropped by the inner join.", "tables": ["human_wildlife_conflict", "animal"], "r": { "human_wildlife_conflict": [1, 2, 3, 4], "animal": [1, 3, 4] }, "s": { "animal": [2] }, "c": { "human_wildlife_conflict": ["animal_id"], "animal": ["animal_id"] }, "f": 4, "h": ["JOIN animal a"] },
+      { "title": "Resolve species", "text": "Animals 1 and 4 are leopards and animal 3 is a tiger. The sloth bear has no conflicts and never appears.", "tables": ["animal", "species"], "r": { "animal": [1, 3, 4], "species": [1, 3] }, "s": { "species": [2] }, "c": { "animal": ["species_id"], "species": ["species_id"] }, "f": 4, "h": ["JOIN species sp"] },
+      { "title": "Count and rank", "text": "Leopards have 3 conflicts and tigers 1. The result is sorted by count and capped by LIMIT.", "tables": ["species"], "r": { "species": [1, 3] }, "f": 2, "h": ["COUNT(hwc.conflict_id)", "ORDER BY conflict_count DESC", "LIMIT 10"], "res": { "cols": ["species_id", "common_name", "threat_level", "conflict_count"], "rows": [[1, "Indian Leopard", "vulnerable", 3], [3, "Bengal Tiger", "endangered", 1]] } }
+    ]
+  },
+  {
+    "cat": "Analytical",
+    "title": "Habitual conflict animals",
+    "tag": "HAVING",
+    "sql": [
+      "SELECT a.animal_id, sp.common_name, a.sex,",
+      "       COUNT(hwc.conflict_id) AS conflict_events",
+      "FROM animal a",
+      "JOIN species sp ON sp.species_id = a.species_id",
+      "JOIN human_wildlife_conflict hwc ON hwc.animal_id = a.animal_id",
+      "GROUP BY a.animal_id, sp.common_name, a.sex",
+      "HAVING COUNT(hwc.conflict_id) >= 2",
+      "ORDER BY conflict_events DESC;"
+    ],
+    "steps": [
+      { "title": "Join animals to conflicts", "text": "Animals without a conflict, such as animal 2, drop out of the inner join.", "tables": ["animal", "species", "human_wildlife_conflict"], "r": { "animal": [1, 3, 4], "species": [1, 3], "human_wildlife_conflict": [1, 2, 3, 4] }, "s": { "animal": [2] }, "c": { "animal": ["animal_id"], "human_wildlife_conflict": ["animal_id"] }, "f": 4, "h": ["JOIN species sp", "JOIN human_wildlife_conflict hwc"] },
+      { "title": "Group and count", "text": "Animal 1 has 2 conflicts. Animals 3 and 4 have 1 each.", "tables": ["animal", "human_wildlife_conflict"], "r": { "animal": [1, 3, 4] }, "f": 3, "h": ["GROUP BY a.animal_id"] },
+      { "title": "Filter groups with HAVING", "text": "WHERE cannot see aggregates, so HAVING keeps only groups with at least 2 conflicts. Animals 3 and 4 are rejected.", "tables": ["animal", "species"], "r": { "animal": [1], "species": [1] }, "s": { "animal": [3, 4] }, "f": 1, "h": ["HAVING COUNT(hwc.conflict_id) >= 2", "ORDER BY conflict_events DESC"], "res": { "cols": ["animal_id", "common_name", "sex", "conflict_events"], "rows": [[1, "Indian Leopard", "male", 2]] } }
+    ]
+  },
+  {
+    "cat": "Analytical",
+    "title": "Incident severity by species threat level",
+    "sql": [
+      "SELECT sp.threat_level,",
+      "       COUNT(DISTINCT i.incident_id) AS total_incidents,",
+      "       COUNT(DISTINCT i.incident_id)",
+      "         FILTER (WHERE i.severity = 'critical') AS critical_incidents,",
+      "       ROUND(100.0 * COUNT(DISTINCT i.incident_id)",
+      "         FILTER (WHERE i.severity = 'critical')",
+      "         / NULLIF(COUNT(DISTINCT i.incident_id), 0), 2)",
+      "         AS critical_severity_ratio",
+      "FROM species sp",
+      "JOIN animal a ON a.species_id = sp.species_id",
+      "JOIN human_wildlife_conflict hwc ON hwc.animal_id = a.animal_id",
+      "JOIN incident i ON i.incident_id = hwc.incident_id",
+      "GROUP BY sp.threat_level",
+      "ORDER BY critical_incidents DESC;"
+    ],
+    "steps": [
+      { "title": "Chain the joins", "text": "Species lead to animals, then to conflicts, then to incidents. The sloth bear has no conflicts and drops out. Incident 2 has no conflict and is never reached.", "tables": ["species", "animal", "human_wildlife_conflict", "incident"], "r": { "species": [1, 3], "animal": [1, 3, 4], "human_wildlife_conflict": [1, 2, 3, 4], "incident": [1, 3, 4, 5] }, "s": { "species": [2], "incident": [2] }, "c": { "species": ["species_id"], "animal": ["species_id", "animal_id"], "human_wildlife_conflict": ["animal_id", "incident_id"], "incident": ["incident_id"] }, "f": 4, "h": ["JOIN animal a", "JOIN human_wildlife_conflict hwc", "JOIN incident i"] },
+      { "title": "Group by threat level", "text": "Leopards are vulnerable and own incidents 1, 3 and 4. The tiger is endangered and owns incident 5.", "tables": ["species", "incident"], "r": { "species": [1, 3], "incident": [1, 3, 4, 5] }, "c": { "species": ["threat_level"] }, "f": 2, "h": ["GROUP BY sp.threat_level"] },
+      { "title": "Count critical incidents", "text": "FILTER counts only critical incidents. Incident 3 is critical, so vulnerable has 1 of 3 and endangered has 0 of 1.", "tables": ["incident"], "r": { "incident": [3] }, "s": { "incident": [1, 4, 5] }, "c": { "incident": ["severity"] }, "f": 2, "h": ["FILTER (WHERE i.severity = 'critical')"] },
+      { "title": "Compute the ratio", "text": "NULLIF guards the division, and the result is a percentage rounded to two decimals.", "tables": ["species", "incident"], "f": 2, "h": ["NULLIF(COUNT(DISTINCT i.incident_id), 0)", "ORDER BY critical_incidents DESC"], "res": { "cols": ["threat_level", "total_incidents", "critical_incidents", "critical_severity_ratio"], "rows": [["vulnerable", 3, 1, 33.33], ["endangered", 1, 0, 0]] } }
+    ]
+  },
+  {
+    "cat": "Analytical",
+    "title": "Endangered sighting density per square kilometer",
+    "sql": [
+      "SELECT z.zone_id, z.zone_name,",
+      "       COUNT(s.sighting_id) AS endangered_sightings,",
+      "       ROUND((ST_Area(z.boundary) / 1000000.0)::numeric, 2) AS zone_sq_km,",
+      "       ROUND(COUNT(s.sighting_id)::numeric",
+      "             / NULLIF(ST_Area(z.boundary) / 1000000.0, 0)::numeric, 4)",
+      "         AS sightings_per_sq_km",
+      "FROM zones z",
+      "JOIN sighting s ON s.zone_id = z.zone_id",
+      "JOIN animal a ON a.animal_id = s.animal_id",
+      "JOIN species sp ON sp.species_id = a.species_id",
+      "WHERE sp.threat_level IN ('endangered', 'vulnerable')",
+      "GROUP BY z.zone_id, z.zone_name, z.boundary",
+      "ORDER BY sightings_per_sq_km DESC;"
+    ],
+    "steps": [
+      { "title": "Join sightings to species", "text": "Each sighting is matched to its zone, then to its animal and species.", "tables": ["zones", "sighting", "animal", "species"], "r": { "zones": [1, 2], "sighting": [1, 2, 3, 4, 5, 6], "animal": [1, 2, 3, 4], "species": [1, 2, 3] }, "c": { "zones": ["zone_id"], "sighting": ["zone_id", "animal_id"], "animal": ["animal_id", "species_id"], "species": ["species_id"] }, "f": 6, "h": ["JOIN sighting s", "JOIN animal a", "JOIN species sp"] },
+      { "title": "Keep threatened species", "text": "Leopards and sloth bears are vulnerable and tigers are endangered, so every sighting passes the threat filter.", "tables": ["species"], "r": { "species": [1, 2, 3] }, "c": { "species": ["threat_level"] }, "f": 6, "h": ["WHERE sp.threat_level IN"] },
+      { "title": "Count per zone", "text": "North Zone has 4 sightings and South Zone has 2. The area is measured with ST_Area on the geography boundary.", "tables": ["zones", "sighting"], "r": { "zones": [1, 2], "sighting": [1, 2, 3, 4, 5, 6] }, "c": { "zones": ["boundary"] }, "f": 2, "h": ["COUNT(s.sighting_id) AS endangered_sightings", "GROUP BY z.zone_id"] },
+      { "title": "Divide by area", "text": "NULLIF turns a zero area into NULL instead of a division error. Zones are sorted by density.", "tables": ["zones"], "f": 2, "h": ["NULLIF(ST_Area", "ORDER BY sightings_per_sq_km DESC"], "res": { "cols": ["zone_id", "zone_name", "endangered_sightings", "zone_sq_km", "sightings_per_sq_km"], "rows": [[1, "North Zone", 4, 412.35, 0.0097], [2, "South Zone", 2, 268.9, 0.0074]] } }
+    ]
+  },
+  {
+    "cat": "Analytical",
+    "title": "Active citizen cohort retention",
+    "tag": "CTE",
+    "sql": [
+      "WITH user_active_months AS (",
+      "  SELECT DISTINCT reported_by,",
+      "         DATE_TRUNC('month', observed_at) AS activity_month",
+      "  FROM sighting",
+      ")",
+      "SELECT curr.activity_month AS current_month,",
+      "       COUNT(DISTINCT curr.reported_by) AS active_reporters,",
+      "       COUNT(DISTINCT prev.reported_by) AS retained_from_prior_month",
+      "FROM user_active_months curr",
+      "LEFT JOIN user_active_months prev",
+      "  ON prev.reported_by = curr.reported_by",
+      " AND prev.activity_month = curr.activity_month - INTERVAL '1 month'",
+      "GROUP BY curr.activity_month",
+      "ORDER BY current_month;"
+    ],
+    "steps": [
+      { "title": "Reduce to reporter months", "text": "The CTE keeps one row per reporter and month: user 2 in September and October, user 1 in October and November, and user 3 in November.", "tables": ["sighting"], "r": { "sighting": [1, 2, 3, 4, 5, 6] }, "c": { "sighting": ["reported_by", "observed_at"] }, "f": 6, "h": ["WITH user_active_months", "DATE_TRUNC('month', observed_at)"] },
+      { "title": "Self join the prior month", "text": "The CTE is joined to itself. A reporter matches the earlier copy only if they were also active exactly one month before. LEFT JOIN keeps reporters with no match.", "tables": ["sighting", "users"], "r": { "users": [1, 2, 3] }, "c": { "sighting": ["reported_by"], "users": ["user_id"] }, "f": 6, "h": ["LEFT JOIN user_active_months prev", "curr.activity_month - INTERVAL '1 month'"] },
+      { "title": "Count per month", "text": "September has 1 active reporter and none retained. October has 2 active and 1 retained (user 2). November has 2 active and 1 retained (user 1).", "tables": ["sighting"], "f": 3, "h": ["COUNT(DISTINCT curr.reported_by)", "COUNT(DISTINCT prev.reported_by)", "GROUP BY curr.activity_month"], "res": { "cols": ["current_month", "active_reporters", "retained_from_prior_month"], "rows": [["2026-09", 1, 0], ["2026-10", 2, 1], ["2026-11", 2, 1]] } }
+    ]
+  }
+]

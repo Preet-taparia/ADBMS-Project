@@ -1,0 +1,40 @@
+[
+  {
+    "cat": "Trigger",
+    "title": "Incident alert trigger",
+    "tag": "AFTER INSERT",
+    "cases": [
+    {
+      "label": "Critical, wide radius",
+      "sql": ["INSERT INTO incident (","  reported_by, zone_id, severity,","  incident_description, location)","VALUES (3, 1, 'critical', 'Leopard in village',","  ST_SetSRID(ST_MakePoint(78.52, 17.40), 4326)::geography);"],
+      "steps": [
+        {"title":"Insert the incident","text":"The new critical incident is stored with a generated id.","tables":["incident"],"h":["INSERT INTO incident","'critical'"],"ops":[{"op":"ins","t":"incident","row":[6,3,1,"critical","reported","78.52 17.40","now",null,null,null]}]},
+        {"title":"Trigger picks a radius","text":"trg_notify_nearby_users_on_incident runs AFTER INSERT and calls trg_fn_broadcast_incident_alert. The CASE on severity returns 10000 m for critical.","tables":["incident"],"c":{"incident":["severity"]},"h":["'critical'"]},
+        {"title":"Find nearby users","text":"User 3 is the reporter and is excluded. User 1 is about 9.3 km away and inside the 10 km radius. User 2 is about 14 km away and outside it.","tables":["incident","users"],"r":{"users":[1]},"s":{"users":[2,3]},"c":{"users":["current_location"]},"h":["VALUES (3, 1"]},
+        {"title":"Write the alert","text":"One incident_alert row is inserted for user 1 with the distance and a formatted message.","tables":["incident","incident_alert","users"],"r":{"users":[1]},"h":["INSERT INTO incident"],"ops":[{"op":"ins","t":"incident_alert","row":[3,6,1,9272.55,"critical","false","now"]}]},
+        {"title":"Notify listeners","text":"Because at least one alert was created, pg_notify publishes the incident id, severity, radius and recipient count on the incident_alerts channel.","tables":["incident_alert"],"r":{"incident_alert":[3]},"h":["INSERT INTO incident"]}
+      ]
+    },
+    {
+      "label": "Nobody nearby",
+      "sql": ["INSERT INTO incident (","  reported_by, zone_id, severity,","  incident_description, location)","VALUES (2, 2, 'low', 'Deer on road',","  ST_SetSRID(ST_MakePoint(78.90, 17.10), 4326)::geography);"],
+      "steps": [
+        {"title":"Insert the incident","text":"The incident is stored normally.","tables":["incident"],"h":["INSERT INTO incident","'low'"],"ops":[{"op":"ins","t":"incident","row":[6,2,2,"low","reported","78.90 17.10","now",null,null,null]}]},
+        {"title":"Trigger picks a radius","text":"Low severity falls through to the ELSE branch of the CASE, so the radius is only 1000 m.","tables":["incident"],"c":{"incident":["severity"]},"h":["'low'"]},
+        {"title":"No user is close enough","text":"User 2 is the reporter. Users 1 and 3 are tens of kilometers away, far outside 1 km.","tables":["incident","users"],"s":{"users":[1,2,3]},"c":{"users":["current_location"]},"h":["VALUES (2, 2"]},
+        {"title":"Nothing is written","text":"The INSERT ... SELECT matches zero rows, so incident_alert stays unchanged. matched_count is 0, so pg_notify is skipped too.","tables":["incident_alert"],"h":["INSERT INTO incident"]}
+      ]
+    },
+    {
+      "label": "No severity given",
+      "sql": ["INSERT INTO incident (","  reported_by, zone_id,","  incident_description, location)","VALUES (1, 1, 'Pugmarks near trail',","  ST_SetSRID(ST_MakePoint(78.47, 17.485), 4326)::geography);"],
+      "steps": [
+        {"title":"Insert with severity NULL","text":"severity is nullable and has no default, so it is stored as NULL.","tables":["incident"],"h":["INSERT INTO incident","reported_by, zone_id,"],"ops":[{"op":"ins","t":"incident","row":[6,1,1,null,"reported","78.47 17.485","now",null,null,null]}]},
+        {"title":"NULL falls to ELSE","text":"CASE NEW.severity matches no WHEN branch for NULL, so the radius becomes 1000 m.","tables":["incident"],"c":{"incident":["severity"]},"h":["INSERT INTO incident"]},
+        {"title":"Find nearby users","text":"User 1 is the reporter. User 3 is about 560 m away and inside the radius. User 2 is far away.","tables":["incident","users"],"r":{"users":[3]},"s":{"users":[1,2]},"c":{"users":["current_location"]},"h":["VALUES (1, 1"]},
+        {"title":"Alert uses a default severity","text":"COALESCE replaces the NULL severity with low in the alert row and in the message text.","tables":["incident","incident_alert","users"],"r":{"users":[3]},"h":["INSERT INTO incident"],"ops":[{"op":"ins","t":"incident_alert","row":[3,6,3,555.97,"low","false","now"]}]}
+      ]
+    }
+    ]
+  }
+]

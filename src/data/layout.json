@@ -1,0 +1,42 @@
+{
+  "card": { "head": 34, "row": 22, "minWidth": 276, "colWidth": 100 },
+  "positions": {
+    "zones": { "x": 0, "y": 0 },
+    "users": { "x": 360, "y": 0 },
+    "user_location_history": { "x": 840, "y": 0 },
+    "species": { "x": 1320, "y": 0 },
+    "authority_history": { "x": 0, "y": 260 },
+    "authority": { "x": 680, "y": 260 },
+    "animal": { "x": 1460, "y": 260 },
+    "incident": { "x": 0, "y": 540 },
+    "human_wildlife_conflict": { "x": 1080, "y": 540 },
+    "sighting": { "x": 1740, "y": 540 },
+    "incident_alert": { "x": 0, "y": 840 },
+    "response_assignment": { "x": 700, "y": 840 },
+    "response_action": { "x": 1400, "y": 840 }
+  },
+  "edges": [
+    ["authority", "zones", "assigned_zone_id"],
+    ["authority_history", "authority", "authority_id"],
+    ["authority_history", "zones", "assigned_zone_id"],
+    ["user_location_history", "users", "user_id"],
+    ["animal", "species", "species_id"],
+    ["animal", "sighting", "last_sighting_id"],
+    ["sighting", "animal", "animal_id"],
+    ["sighting", "users", "reported_by"],
+    ["sighting", "zones", "zone_id"],
+    ["incident", "users", "reported_by"],
+    ["incident", "zones", "zone_id"],
+    ["incident", "authority", "verified_by"],
+    ["human_wildlife_conflict", "incident", "incident_id"],
+    ["human_wildlife_conflict", "animal", "animal_id"],
+    ["human_wildlife_conflict", "authority", "identified_by"],
+    ["human_wildlife_conflict", "users", "affected_user_id"],
+    ["response_assignment", "incident", "incident_id"],
+    ["response_assignment", "authority", "assigned_to"],
+    ["response_action", "response_assignment", "assignment_id"],
+    ["response_action", "authority", "performed_by"],
+    ["incident_alert", "incident", "incident_id"],
+    ["incident_alert", "users", "user_id"]
+  ]
+}

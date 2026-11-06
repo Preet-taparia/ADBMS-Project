@@ -1,0 +1,99 @@
+[
+  {
+    "cat": "Temporal",
+    "title": "Incidents reported in the last 24 days",
+    "sql": [
+      "SELECT incident_id, reported_by, zone_id,",
+      "       severity, status, observed_at",
+      "FROM incident",
+      "WHERE observed_at >= NOW() - INTERVAL '24 days'",
+      "ORDER BY observed_at DESC;"
+    ],
+    "steps": [
+      { "title": "Compute the cutoff", "text": "NOW() minus 24 days gives a timestamp that every observed_at is compared against. The index on (status, observed_at) and the table scan both use it.", "tables": ["incident"], "c": { "incident": ["observed_at"] }, "h": ["INTERVAL '24 days'"] },
+      { "title": "Filter rows", "text": "Incidents 1, 3, 4 and 5 are newer than the cutoff. Incident 2 is 27 days old and is rejected.", "tables": ["incident"], "r": { "incident": [1, 3, 4, 5] }, "s": { "incident": [2] }, "c": { "incident": ["observed_at"] }, "h": ["WHERE observed_at >="] },
+      { "title": "Sort newest first", "text": "The surviving rows are ordered by observed_at descending.", "tables": ["incident"], "r": { "incident": [1, 3, 4, 5] }, "s": { "incident": [2] }, "h": ["ORDER BY observed_at DESC"], "res": { "cols": ["incident_id", "reported_by", "zone_id", "severity", "status", "observed_at"], "rows": [[3, 1, 1, "critical", "verified", "2026-11-06 08:20"], [4, 3, 1, "medium", "reported", "2026-11-05 15:00"], [1, 1, 1, "high", "in_progress", "2026-11-04 21:10"], [5, 2, 2, "medium", "resolved", "2026-10-20 07:00"]] } }
+    ]
+  },
+  {
+    "cat": "Temporal",
+    "title": "Animals not sighted in the past 30 days",
+    "sql": [
+      "SELECT a.animal_id, sp.common_name, sp.threat_level,",
+      "       a.last_location_updated_at,",
+      "       NOW() - a.last_location_updated_at AS time_since_last_seen",
+      "FROM animal a",
+      "JOIN species sp ON sp.species_id = a.species_id",
+      "WHERE a.last_location_updated_at < NOW() - INTERVAL '30 days'",
+      "ORDER BY a.last_location_updated_at;"
+    ],
+    "steps": [
+      { "title": "Join species", "text": "Every animal is matched with its species through species_id.", "tables": ["animal", "species"], "r": { "animal": [1, 2, 3, 4], "species": [1, 2, 3] }, "c": { "animal": ["species_id"], "species": ["species_id"] }, "h": ["JOIN species sp"] },
+      { "title": "Compare with the cutoff", "text": "The cutoff is 30 days before now. Only animal 2 was last updated before it. Animals 1, 3 and 4 were updated within the window.", "tables": ["animal"], "r": { "animal": [2] }, "s": { "animal": [1, 3, 4] }, "c": { "animal": ["last_location_updated_at"] }, "h": ["INTERVAL '30 days'"] },
+      { "title": "Compute the gap", "text": "Subtracting the timestamps gives an interval. Sorting oldest first puts the longest silence on top.", "tables": ["animal", "species"], "r": { "animal": [2], "species": [2] }, "h": ["NOW() - a.last_location_updated_at", "ORDER BY"], "res": { "cols": ["animal_id", "common_name", "threat_level", "last_location_updated_at", "time_since_last_seen"], "rows": [[2, "Sloth Bear", "vulnerable", "2026-09-20 19:05", "46 days 14:55:00"]] } }
+    ]
+  },
+  {
+    "cat": "Temporal",
+    "title": "Sighting distribution by hour of the day",
+    "sql": [
+      "SELECT EXTRACT(HOUR FROM observed_at",
+      "         AT TIME ZONE 'Asia/Kolkata')::int AS hour_of_day,",
+      "       COUNT(*) AS total_sightings",
+      "FROM sighting",
+      "GROUP BY hour_of_day",
+      "ORDER BY hour_of_day;"
+    ],
+    "steps": [
+      { "title": "Convert to local time", "text": "observed_at is a timestamptz stored in UTC. AT TIME ZONE shifts it to local time before the hour is taken, so the buckets match the clock people see.", "tables": ["sighting"], "r": { "sighting": [1, 2, 3, 4, 5, 6] }, "c": { "sighting": ["observed_at"] }, "f": 6, "h": ["AT TIME ZONE 'Asia/Kolkata'"] },
+      { "title": "Group by hour", "text": "Sightings fall into hour 5 (two rows), 6, 7, 18 and 19.", "tables": ["sighting"], "r": { "sighting": [1, 2, 3, 4, 5, 6] }, "c": { "sighting": ["observed_at"] }, "f": 5, "h": ["COUNT(*)", "GROUP BY hour_of_day"] },
+      { "title": "Sort by hour", "text": "Groups are returned in clock order.", "tables": ["sighting"], "h": ["ORDER BY hour_of_day"], "f": 5, "res": { "cols": ["hour_of_day", "total_sightings"], "rows": [[5, 2], [6, 1], [7, 1], [18, 1], [19, 1]] } }
+    ]
+  },
+  {
+    "cat": "Temporal",
+    "title": "Response turnaround: assignment to completion",
+    "sql": [
+      "SELECT a.authority_id, a.authority_name,",
+      "       COUNT(*) AS completed_tasks,",
+      "       ROUND(AVG(EXTRACT(EPOCH FROM",
+      "         (ra.completed_at - ra.assigned_at)) / 60.0)::numeric, 2)",
+      "         AS avg_completion_minutes",
+      "FROM response_assignment ra",
+      "JOIN authority a ON a.authority_id = ra.assigned_to",
+      "WHERE ra.status = 'completed'",
+      "  AND ra.completed_at IS NOT NULL",
+      "GROUP BY a.authority_id, a.authority_name;"
+    ],
+    "steps": [
+      { "title": "Keep completed work", "text": "Assignments 1 and 2 are still open. Assignments 3 and 4 are completed and have a completed_at value.", "tables": ["response_assignment"], "r": { "response_assignment": [3, 4] }, "s": { "response_assignment": [1, 2] }, "c": { "response_assignment": ["status", "completed_at"] }, "f": 2, "h": ["ra.status = 'completed'", "ra.completed_at IS NOT NULL"] },
+      { "title": "Duration per assignment", "text": "completed_at minus assigned_at gives 240 minutes for assignment 3 and 210 minutes for assignment 4.", "tables": ["response_assignment"], "r": { "response_assignment": [3, 4] }, "c": { "response_assignment": ["assigned_at", "completed_at"] }, "f": 2, "h": ["EXTRACT(EPOCH FROM", "ra.completed_at - ra.assigned_at"] },
+      { "title": "Join and average", "text": "Both assignments belong to Officer B, so one group is formed with 2 completed tasks and an average of 225 minutes.", "tables": ["response_assignment", "authority"], "r": { "response_assignment": [3, 4], "authority": [2] }, "c": { "response_assignment": ["assigned_to"], "authority": ["authority_id"] }, "f": 1, "h": ["JOIN authority a", "GROUP BY"], "res": { "cols": ["authority_id", "authority_name", "completed_tasks", "avg_completion_minutes"], "rows": [[2, "Officer B", 2, 225]] } }
+    ]
+  },
+  {
+    "cat": "Temporal",
+    "title": "Seasonal sighting distribution by species",
+    "tag": "LATERAL",
+    "sql": [
+      "SELECT sp.common_name,",
+      "  COUNT(*) FILTER (WHERE mo.m IN (12, 1, 2)) AS winter_sightings,",
+      "  COUNT(*) FILTER (WHERE mo.m IN (3, 4, 5)) AS spring_sightings,",
+      "  COUNT(*) FILTER (WHERE mo.m IN (6, 7, 8)) AS summer_sightings,",
+      "  COUNT(*) FILTER (WHERE mo.m IN (9, 10, 11)) AS autumn_sightings",
+      "FROM sighting s",
+      "JOIN animal a ON a.animal_id = s.animal_id",
+      "JOIN species sp ON sp.species_id = a.species_id",
+      "CROSS JOIN LATERAL (",
+      "  SELECT EXTRACT(MONTH FROM s.observed_at)::int AS m",
+      ") mo",
+      "GROUP BY sp.common_name",
+      "ORDER BY sp.common_name;"
+    ],
+    "steps": [
+      { "title": "Resolve species", "text": "Each sighting is joined to its animal and then to the species.", "tables": ["sighting", "animal", "species"], "r": { "sighting": [1, 2, 3, 4, 5, 6], "animal": [1, 2, 3, 4], "species": [1, 2, 3] }, "c": { "sighting": ["animal_id"], "animal": ["animal_id", "species_id"], "species": ["species_id"] }, "f": 6, "h": ["JOIN animal a", "JOIN species sp"] },
+      { "title": "Compute the month once", "text": "The lateral subquery extracts the month per sighting a single time, so the four FILTER clauses reuse it instead of repeating EXTRACT.", "tables": ["sighting"], "r": { "sighting": [1, 2, 3, 4, 5, 6] }, "c": { "sighting": ["observed_at"] }, "f": 6, "h": ["CROSS JOIN LATERAL", "EXTRACT(MONTH FROM s.observed_at)"] },
+      { "title": "Count per season", "text": "September, October and November all fall in autumn, so every sighting lands in the autumn column.", "tables": ["sighting", "species"], "f": 3, "h": ["FILTER (WHERE mo.m IN (9, 10, 11))", "GROUP BY sp.common_name"], "res": { "cols": ["common_name", "winter_sightings", "spring_sightings", "summer_sightings", "autumn_sightings"], "rows": [["Bengal Tiger", 0, 0, 0, 1], ["Indian Leopard", 0, 0, 0, 4], ["Sloth Bear", 0, 0, 0, 1]] } }
+    ]
+  }
+]

@@ -1,0 +1,107 @@
+[
+  {
+    "cat": "Spatial",
+    "title": "Available field officers within 5 km of an incident",
+    "sql": [
+      "SELECT a.authority_id, a.authority_name, a.phone,",
+      "       ROUND(ST_Distance(a.current_location, i.location)::numeric, 2)",
+      "         AS distance_meters",
+      "FROM authority a",
+      "JOIN incident i ON i.incident_id = 1",
+      "WHERE a.available = TRUE",
+      "  AND a.role = 'field_officer'",
+      "  AND ST_DWithin(a.current_location, i.location, 5000)",
+      "ORDER BY distance_meters;"
+    ],
+    "steps": [
+      { "title": "Pick the incident", "text": "The join condition pins the query to incident 1, so every officer is compared with a single point.", "tables": ["authority", "incident"], "r": { "incident": [1] }, "c": { "incident": ["incident_id", "location"] }, "h": ["JOIN incident i ON i.incident_id = 1"] },
+      { "title": "Filter role and availability", "text": "Officer B is unavailable and Manager D is a regional manager, so both are rejected before any distance is computed.", "tables": ["authority"], "r": { "authority": [1, 3] }, "s": { "authority": [2, 4] }, "c": { "authority": ["available", "role"] }, "h": ["a.available = TRUE", "a.role = 'field_officer'"] },
+      { "title": "Distance within 5 km", "text": "The GiST index narrows candidates by bounding box, then exact spheroid distance decides. Officer A is about 1.5 km away. Officer C is about 5.9 km away and is rejected.", "tables": ["authority", "incident"], "r": { "authority": [1], "incident": [1] }, "s": { "authority": [2, 3, 4] }, "c": { "authority": ["current_location"], "incident": ["location"] }, "h": ["ST_DWithin"] },
+      { "title": "Sort and return", "text": "The remaining officer is returned with the distance in meters.", "tables": ["authority"], "r": { "authority": [1] }, "h": ["SELECT a.authority_id", "ORDER BY distance_meters"], "res": { "cols": ["authority_id", "authority_name", "phone", "distance_meters"], "rows": [[1, "Officer A", "9000000011", 1536.42]] } }
+    ]
+  },
+  {
+    "cat": "Spatial",
+    "title": "Nearest 3 active incidents to an officer",
+    "tag": "KNN",
+    "sql": [
+      "SELECT i.incident_id, i.severity, i.status,",
+      "       ROUND(ST_Distance(i.location, a.current_location)::numeric, 2)",
+      "         AS distance_meters",
+      "FROM authority a",
+      "JOIN incident i",
+      "  ON i.status IN ('reported', 'verified', 'in_progress')",
+      "WHERE a.authority_id = 1",
+      "ORDER BY i.location <-> a.current_location",
+      "LIMIT 3;"
+    ],
+    "steps": [
+      { "title": "Pick the officer", "text": "Authority 1 supplies the reference point.", "tables": ["authority", "incident"], "r": { "authority": [1] }, "c": { "authority": ["current_location"] }, "h": ["WHERE a.authority_id = 1"] },
+      { "title": "Keep active incidents", "text": "Incidents 2 and 5 are resolved and are dropped. Incidents 1, 3 and 4 are still active.", "tables": ["incident"], "r": { "incident": [1, 3, 4] }, "s": { "incident": [2, 5] }, "c": { "incident": ["status"] }, "h": ["ON i.status IN"] },
+      { "title": "Nearest-first ordering", "text": "The <-> operator lets the GiST index return incidents in distance order, so PostgreSQL does not sort every row.", "tables": ["authority", "incident"], "r": { "authority": [1], "incident": [1, 3, 4] }, "c": { "incident": ["location"] }, "h": ["ORDER BY i.location <-> a.current_location"] },
+      { "title": "Limit and return", "text": "LIMIT 3 keeps the three closest incidents.", "tables": ["incident"], "r": { "incident": [1, 3, 4] }, "s": { "incident": [2, 5] }, "h": ["LIMIT 3"], "res": { "cols": ["incident_id", "severity", "status", "distance_meters"], "rows": [[1, "high", "in_progress", 1536.42], [3, "critical", "verified", 3953.4], [4, "medium", "reported", 4447.8]] } }
+    ]
+  },
+  {
+    "cat": "Spatial",
+    "title": "Land area of each zone",
+    "sql": [
+      "SELECT zone_id, zone_name,",
+      "       ROUND((ST_Area(boundary) / 1000000.0)::numeric, 2)",
+      "         AS area_sq_km",
+      "FROM zones",
+      "ORDER BY area_sq_km DESC;"
+    ],
+    "steps": [
+      { "title": "Read the polygons", "text": "Each zone boundary is read from the zones table.", "tables": ["zones"], "r": { "zones": [1, 2] }, "c": { "zones": ["boundary"] }, "h": ["FROM zones"] },
+      { "title": "Measure the area", "text": "ST_Area on a geography column returns square meters on the spheroid. Dividing by 1,000,000 converts to square kilometers.", "tables": ["zones"], "r": { "zones": [1, 2] }, "c": { "zones": ["boundary"] }, "h": ["ST_Area(boundary)"] },
+      { "title": "Sort and return", "text": "Zones are ordered from largest to smallest.", "tables": ["zones"], "h": ["ORDER BY area_sq_km DESC"], "res": { "cols": ["zone_id", "zone_name", "area_sq_km"], "rows": [[1, "North Zone", 412.35], [2, "South Zone", 268.9]] } }
+    ]
+  },
+  {
+    "cat": "Spatial",
+    "title": "Animal pairs within 1 km of each other",
+    "tag": "SELF",
+    "sql": [
+      "SELECT a1.animal_id AS animal_1_id,",
+      "       sp1.common_name AS animal_1_species,",
+      "       a2.animal_id AS animal_2_id,",
+      "       sp2.common_name AS animal_2_species,",
+      "       ROUND(ST_Distance(a1.last_known_location,",
+      "                         a2.last_known_location)::numeric, 2)",
+      "         AS distance_meters",
+      "FROM animal a1",
+      "JOIN animal a2 ON a1.animal_id < a2.animal_id",
+      "JOIN species sp1 ON sp1.species_id = a1.species_id",
+      "JOIN species sp2 ON sp2.species_id = a2.species_id",
+      "WHERE ST_DWithin(a1.last_known_location,",
+      "                 a2.last_known_location, 1000);"
+    ],
+    "steps": [
+      { "title": "Two copies of animal", "text": "The table is read twice, as a1 and a2.", "tables": ["animal"], "r": { "animal": [1, 2, 3, 4] }, "f": 16, "h": ["FROM animal a1", "JOIN animal a2"] },
+      { "title": "Each pair once", "text": "a1.animal_id < a2.animal_id removes self pairs and mirrored duplicates, leaving 6 pairs out of 16.", "tables": ["animal"], "r": { "animal": [1, 2, 3, 4] }, "c": { "animal": ["animal_id"] }, "f": 6, "h": ["a1.animal_id < a2.animal_id"] },
+      { "title": "Distance filter", "text": "Only animals 1 and 4 are within 1 km, about 770 m apart. Animals 2 and 3 are about 3 km apart and every other pair is farther still.", "tables": ["animal"], "r": { "animal": [1, 4] }, "s": { "animal": [2, 3] }, "c": { "animal": ["last_known_location"] }, "f": 1, "h": ["ST_DWithin"] },
+      { "title": "Attach species", "text": "Both animals are resolved to their species names.", "tables": ["animal", "species"], "r": { "animal": [1, 4], "species": [1] }, "c": { "animal": ["species_id"], "species": ["species_id"] }, "f": 1, "h": ["JOIN species sp1", "JOIN species sp2"], "res": { "cols": ["animal_1_id", "animal_1_species", "animal_2_id", "animal_2_species", "distance_meters"], "rows": [[1, "Indian Leopard", 4, "Indian Leopard", 768.41]] } }
+    ]
+  },
+  {
+    "cat": "Spatial",
+    "title": "Users within 2 km of an active incident",
+    "sql": [
+      "SELECT DISTINCT u.user_id, u.full_name, u.phone,",
+      "       i.incident_id, i.severity,",
+      "       ROUND(ST_Distance(u.current_location, i.location)::numeric, 2)",
+      "         AS distance_meters",
+      "FROM users u",
+      "JOIN incident i",
+      "  ON ST_DWithin(u.current_location, i.location, 2000)",
+      "WHERE i.status IN ('reported', 'verified', 'in_progress')",
+      "ORDER BY u.user_id, distance_meters;"
+    ],
+    "steps": [
+      { "title": "Keep active incidents", "text": "Incidents 2 and 5 are resolved and are rejected. Incidents 1, 3 and 4 remain.", "tables": ["incident"], "r": { "incident": [1, 3, 4] }, "s": { "incident": [2, 5] }, "c": { "incident": ["status"] }, "h": ["WHERE i.status IN"] },
+      { "title": "Test users against each incident", "text": "User 3 is about 1.1 km from incident 1 and 1.5 km from incident 3. Users 1 and 2 are farther than 2 km from every active incident.", "tables": ["users", "incident"], "r": { "users": [3], "incident": [1, 3] }, "s": { "users": [1, 2], "incident": [4] }, "c": { "users": ["current_location"], "incident": ["location"] }, "h": ["ST_DWithin"] },
+      { "title": "Distinct and sort", "text": "Each user and incident pair appears once, ordered by user and then distance.", "tables": ["users", "incident"], "r": { "users": [3], "incident": [1, 3] }, "h": ["SELECT DISTINCT", "ORDER BY u.user_id"], "res": { "cols": ["user_id", "full_name", "phone", "incident_id", "severity", "distance_meters"], "rows": [[3, "Meena Iyer", "9000000003", 1, "high", 1110.38], [3, "Meena Iyer", "9000000003", 3, "critical", 1536.42]] } }
+    ]
+  }
+]

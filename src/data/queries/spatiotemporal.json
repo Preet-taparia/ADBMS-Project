@@ -1,0 +1,113 @@
+[
+  {
+    "cat": "Spatiotemporal",
+    "title": "Animal movement trajectory as a LineString",
+    "sql": [
+      "SELECT a.animal_id, sp.common_name,",
+      "       ST_MakeLine(s.location::geometry",
+      "                   ORDER BY s.observed_at)::geography",
+      "         AS movement_path",
+      "FROM animal a",
+      "JOIN species sp ON sp.species_id = a.species_id",
+      "JOIN sighting s ON s.animal_id = a.animal_id",
+      "WHERE a.animal_id = 1",
+      "  AND s.observed_at >= NOW() - INTERVAL '30 days'",
+      "GROUP BY a.animal_id, sp.common_name",
+      "HAVING COUNT(*) > 1;"
+    ],
+    "steps": [
+      { "title": "Filter animal and window", "text": "Only sightings of animal 1 within the last 30 days are kept. Sightings 1, 2 and 3 qualify, the oldest being 25 days old. Sightings of other animals are rejected.", "tables": ["animal", "sighting", "species"], "r": { "animal": [1], "sighting": [1, 2, 3], "species": [1] }, "s": { "sighting": [4, 5, 6] }, "c": { "sighting": ["animal_id", "observed_at"] }, "f": 3, "h": ["WHERE a.animal_id = 1", "INTERVAL '30 days'"] },
+      { "title": "Order points by time", "text": "ORDER BY inside ST_MakeLine sorts the points chronologically before they are joined, so the line follows the real path.", "tables": ["sighting"], "r": { "sighting": [1, 2, 3] }, "c": { "sighting": ["location", "observed_at"] }, "f": 3, "h": ["ST_MakeLine", "ORDER BY s.observed_at"] },
+      { "title": "Require two points", "text": "HAVING COUNT(*) > 1 drops animals with a single sighting, since one point cannot form a line.", "tables": ["animal", "species"], "r": { "animal": [1], "species": [1] }, "f": 1, "h": ["HAVING COUNT(*) > 1"], "res": { "cols": ["animal_id", "common_name", "movement_path"], "rows": [[1, "Indian Leopard", "LINESTRING(78.46 17.46, 78.47 17.47, 78.48 17.48)"]] } }
+    ]
+  },
+  {
+    "cat": "Spatiotemporal",
+    "title": "Cumulative distance traveled in 30 days",
+    "tag": "WINDOW",
+    "sql": [
+      "WITH ordered_steps AS (",
+      "  SELECT animal_id, location,",
+      "         LAG(location) OVER (",
+      "           PARTITION BY animal_id",
+      "           ORDER BY observed_at) AS prev_location",
+      "  FROM sighting",
+      "  WHERE animal_id = 1",
+      "    AND observed_at >= NOW() - INTERVAL '30 days'",
+      ")",
+      "SELECT animal_id,",
+      "       ROUND(SUM(ST_Distance(location, prev_location))::numeric, 2)",
+      "         AS total_distance_meters",
+      "FROM ordered_steps",
+      "WHERE prev_location IS NOT NULL",
+      "GROUP BY animal_id;"
+    ],
+    "steps": [
+      { "title": "Select the window", "text": "Sightings 1, 2 and 3 belong to animal 1 and fall within 30 days. The filter runs inside the CTE so the window function sees only relevant rows.", "tables": ["sighting"], "r": { "sighting": [1, 2, 3] }, "s": { "sighting": [4, 5, 6] }, "c": { "sighting": ["animal_id", "observed_at"] }, "f": 3, "h": ["WHERE animal_id = 1", "INTERVAL '30 days'"] },
+      { "title": "Look back one row", "text": "LAG returns the previous location in time order for the same animal. The first sighting has no predecessor, so its prev_location is NULL.", "tables": ["sighting"], "r": { "sighting": [1, 2, 3] }, "c": { "sighting": ["location", "observed_at"] }, "f": 3, "h": ["LAG(location) OVER", "PARTITION BY animal_id"] },
+      { "title": "Drop the first row", "text": "The row without a previous point cannot form a leg, so it is removed. Two legs remain: sighting 1 to 2 and sighting 2 to 3.", "tables": ["sighting"], "r": { "sighting": [2, 3] }, "s": { "sighting": [1] }, "f": 2, "h": ["prev_location IS NOT NULL"] },
+      { "title": "Sum the legs", "text": "Each leg is about 1.54 km. Adding them gives the total path length in meters.", "tables": ["sighting"], "r": { "sighting": [2, 3] }, "f": 1, "h": ["SUM(ST_Distance(location, prev_location))", "GROUP BY animal_id"], "res": { "cols": ["animal_id", "total_distance_meters"], "rows": [[1, 3072.84]] } }
+    ]
+  },
+  {
+    "cat": "Spatiotemporal",
+    "title": "Spatial incident clustering over 30 days",
+    "tag": "WINDOW",
+    "sql": [
+      "SELECT incident_id, severity, observed_at,",
+      "       ST_ClusterKMeans(location::geometry, 2) OVER ()",
+      "         AS cluster_id",
+      "FROM incident",
+      "WHERE observed_at >= NOW() - INTERVAL '30 days';"
+    ],
+    "steps": [
+      { "title": "Apply the time window", "text": "All five incidents are newer than 30 days, so none is rejected. WHERE runs before the window function, so only these rows are clustered.", "tables": ["incident"], "r": { "incident": [1, 2, 3, 4, 5] }, "c": { "incident": ["observed_at"] }, "f": 5, "h": ["WHERE observed_at >=", "INTERVAL '30 days'"] },
+      { "title": "Run k-means", "text": "ST_ClusterKMeans groups the points into 2 clusters by location. The three North Zone incidents sit together and the two South Zone incidents form the other cluster. k must not exceed the number of rows, so a small k is used for this sample.", "tables": ["incident"], "r": { "incident": [1, 2, 3, 4, 5] }, "c": { "incident": ["location"] }, "f": 5, "h": ["ST_ClusterKMeans", "OVER ()"] },
+      { "title": "Return cluster ids", "text": "Every incident is returned together with its cluster number, which starts at 0.", "tables": ["incident"], "r": { "incident": [1, 2, 3, 4, 5] }, "f": 5, "h": ["SELECT incident_id", "AS cluster_id"], "res": { "cols": ["incident_id", "severity", "observed_at", "cluster_id"], "rows": [[1, "high", "2026-11-04 21:10", 0], [2, "low", "2026-10-10 11:30", 1], [3, "critical", "2026-11-06 08:20", 0], [4, "medium", "2026-11-05 15:00", 0], [5, "medium", "2026-10-20 07:00", 1]] } }
+    ]
+  },
+  {
+    "cat": "Spatiotemporal",
+    "title": "Animals sighted in a zone in the last 7 days",
+    "sql": [
+      "SELECT a.animal_id, sp.common_name, s.sighting_id,",
+      "       ST_AsText(s.location::geometry) AS location,",
+      "       s.observed_at",
+      "FROM sighting s",
+      "JOIN animal a ON a.animal_id = s.animal_id",
+      "JOIN species sp ON sp.species_id = a.species_id",
+      "WHERE s.zone_id = 1",
+      "  AND s.observed_at >= NOW() - INTERVAL '7 days'",
+      "ORDER BY s.observed_at DESC;"
+    ],
+    "steps": [
+      { "title": "Zone filter", "text": "The index on zone_id keeps sightings 1, 2, 3 and 6. Sightings 4 and 5 belong to South Zone.", "tables": ["sighting"], "r": { "sighting": [1, 2, 3, 6] }, "s": { "sighting": [4, 5] }, "c": { "sighting": ["zone_id"] }, "f": 4, "h": ["WHERE s.zone_id = 1"] },
+      { "title": "Time filter", "text": "Sighting 1 is from October 12, far outside the 7 day window, so only sightings 2, 3 and 6 remain.", "tables": ["sighting"], "r": { "sighting": [2, 3, 6] }, "s": { "sighting": [1, 4, 5] }, "c": { "sighting": ["observed_at"] }, "f": 3, "h": ["INTERVAL '7 days'"] },
+      { "title": "Join and sort", "text": "Each sighting is matched to its animal and species, and results are ordered newest first.", "tables": ["sighting", "animal", "species"], "r": { "sighting": [2, 3, 6], "animal": [1, 4], "species": [1] }, "c": { "sighting": ["animal_id"], "animal": ["animal_id", "species_id"], "species": ["species_id"] }, "f": 3, "h": ["JOIN animal a", "JOIN species sp", "ORDER BY s.observed_at DESC"], "res": { "cols": ["animal_id", "common_name", "sighting_id", "location", "observed_at"], "rows": [[4, "Indian Leopard", 6, "POINT(78.485 17.485)", "2026-11-06 07:10"], [1, "Indian Leopard", 3, "POINT(78.48 17.48)", "2026-11-05 06:30"], [1, "Indian Leopard", 2, "POINT(78.47 17.47)", "2026-11-01 18:20"]] } }
+    ]
+  },
+  {
+    "cat": "Spatiotemporal",
+    "title": "Species not sighted recently in a known zone",
+    "tag": "SEMI",
+    "sql": [
+      "SELECT sp.species_id, sp.common_name,",
+      "       COUNT(a.animal_id) AS total_animals,",
+      "       MAX(a.last_location_updated_at) AS last_location_update",
+      "FROM species sp",
+      "JOIN animal a ON a.species_id = sp.species_id",
+      "WHERE a.last_location_updated_at < NOW() - INTERVAL '1 day'",
+      "  AND EXISTS (",
+      "    SELECT 1",
+      "    FROM zones z",
+      "    WHERE ST_Covers(z.boundary::geometry,",
+      "                    a.last_known_location::geometry))",
+      "GROUP BY sp.species_id, sp.common_name;"
+    ],
+    "steps": [
+      { "title": "Find stale animals", "text": "Animals 1, 2 and 3 were last updated more than a day ago. Animal 4 was updated this morning and is rejected.", "tables": ["species", "animal"], "r": { "animal": [1, 2, 3], "species": [1, 2, 3] }, "s": { "animal": [4] }, "c": { "animal": ["last_location_updated_at", "species_id"], "species": ["species_id"] }, "f": 3, "h": ["JOIN animal a", "INTERVAL '1 day'"] },
+      { "title": "Check the last known area", "text": "EXISTS only asks whether some zone polygon covers the animal's last position. SELECT 1 is enough because the subquery returns no columns that are used. All three animals lie inside a zone.", "tables": ["animal", "zones"], "r": { "animal": [1, 2, 3], "zones": [1, 2] }, "c": { "animal": ["last_known_location"], "zones": ["boundary"] }, "f": 3, "h": ["AND EXISTS (", "SELECT 1", "ST_Covers"] },
+      { "title": "Group by species", "text": "Animals are counted per species and the latest update is kept with MAX.", "tables": ["species", "animal"], "f": 3, "h": ["COUNT(a.animal_id)", "GROUP BY sp.species_id"], "res": { "cols": ["species_id", "common_name", "total_animals", "last_location_update"], "rows": [[1, "Indian Leopard", 1, "2026-11-05 06:30"], [2, "Sloth Bear", 1, "2026-09-20 19:05"], [3, "Bengal Tiger", 1, "2026-10-25 05:50"]] } }
+    ]
+  }
+]

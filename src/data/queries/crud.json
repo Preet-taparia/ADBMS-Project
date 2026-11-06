@@ -1,0 +1,152 @@
+[
+  {
+    "cat": "CRUD",
+    "title": "Create: report an incident",
+    "tag": "TRIGGER",
+    "sql": [
+      "INSERT INTO incident (",
+      "  reported_by, zone_id, severity,",
+      "  incident_description, location",
+      ") VALUES (",
+      "  2, 1, 'medium', 'Bear near farm',",
+      "  ST_SetSRID(ST_MakePoint(78.48, 17.48), 4326)::geography",
+      ");"
+    ],
+    "steps": [
+      { "title": "Check foreign keys", "text": "reported_by and zone_id must point to existing rows, so user 2 and zone 1 are looked up through their primary keys.", "tables": ["incident", "users", "zones"], "r": { "users": [2], "zones": [1] }, "c": { "incident": ["reported_by", "zone_id"] }, "h": ["reported_by, zone_id", "2, 1, 'medium'"] },
+      { "title": "Fill defaults", "text": "status becomes reported and observed_at becomes NOW(). verified_at, verified_by and resolved_at stay NULL.", "tables": ["incident"], "c": { "incident": ["status", "observed_at"] }, "h": ["VALUES"] },
+      { "title": "Write the row", "text": "A new row is stored with a generated incident_id.", "tables": ["incident"], "h": ["INSERT INTO incident"], "ops": [{ "op": "ins", "t": "incident", "row": [6, 2, 1, "medium", "reported", "78.48 17.48", "now", null, null, null] }] },
+      { "title": "Alert trigger fires", "text": "The AFTER INSERT trigger picks a radius from severity: medium means 2000 m. Users within that radius are collected, and the reporter (user 2) is always excluded. Only user 3 is close enough, at about 1.06 km.", "tables": ["incident", "users"], "r": { "users": [3] }, "s": { "users": [1, 2] }, "c": { "users": ["current_location"] }, "h": ["'medium'"] },
+      { "title": "Write the alert", "text": "One incident_alert row is inserted for user 3, and pg_notify publishes the recipient count on the incident_alerts channel.", "tables": ["incident", "incident_alert", "users"], "r": { "users": [3] }, "ops": [{ "op": "ins", "t": "incident_alert", "row": [3, 6, 3, 1062.1, "medium", "false", "now"] }] }
+    ]
+  },
+  {
+    "cat": "CRUD",
+    "title": "Create: record a sighting and refresh the animal",
+    "tag": "CTE",
+    "sql": [
+      "WITH new_sighting AS (",
+      "  INSERT INTO sighting (",
+      "    animal_id, reported_by, zone_id, location, image_url)",
+      "  VALUES (1, 1, 1,",
+      "    ST_SetSRID(ST_MakePoint(78.49, 17.49), 4326)::geography,",
+      "    'https://example.com/s.jpg')",
+      "  RETURNING sighting_id, animal_id, location, observed_at",
+      ")",
+      "UPDATE animal a",
+      "SET last_known_location = ns.location,",
+      "    last_location_updated_at = ns.observed_at,",
+      "    last_sighting_id = ns.sighting_id",
+      "FROM new_sighting ns",
+      "WHERE a.animal_id = ns.animal_id;"
+    ],
+    "steps": [
+      { "title": "Check foreign keys", "text": "animal 1, user 1 and zone 1 must exist before the sighting is accepted.", "tables": ["sighting", "animal", "users", "zones"], "r": { "animal": [1], "users": [1], "zones": [1] }, "h": ["INSERT INTO sighting", "VALUES (1, 1, 1,"] },
+      { "title": "Insert inside the CTE", "text": "The sighting row is written first. observed_at defaults to NOW() and RETURNING hands the new row to the outer statement.", "tables": ["sighting"], "h": ["WITH new_sighting", "RETURNING"], "ops": [{ "op": "ins", "t": "sighting", "row": [7, 1, 1, 1, "78.49 17.49", "now"] }] },
+      { "title": "Match the animal", "text": "The returned row is joined to animal through animal_id, so exactly one animal row is targeted.", "tables": ["sighting", "animal"], "r": { "animal": [1] }, "c": { "sighting": ["animal_id"], "animal": ["animal_id"] }, "h": ["FROM new_sighting ns", "WHERE a.animal_id"] },
+      { "title": "Update the animal", "text": "last_known_location, last_location_updated_at and last_sighting_id are copied from the new sighting. Both writes share one statement, so they commit or fail together.", "tables": ["sighting", "animal"], "h": ["UPDATE animal a", "SET last_known_location", "last_sighting_id"], "ops": [{ "op": "upd", "t": "animal", "pk": 1, "set": { "last_known_location": "78.49 17.49", "last_location_updated_at": "now", "last_sighting_id": 7 } }] }
+    ]
+  },
+  {
+    "cat": "CRUD",
+    "title": "Create: assign an available officer",
+    "sql": [
+      "INSERT INTO response_assignment (incident_id, assigned_to)",
+      "SELECT 4, a.authority_id",
+      "FROM authority a",
+      "WHERE a.authority_id = 3",
+      "  AND a.available = TRUE;"
+    ],
+    "steps": [
+      { "title": "Read the officer", "text": "Authority 3 is found by primary key.", "tables": ["authority"], "r": { "authority": [3] }, "c": { "authority": ["authority_id"] }, "h": ["FROM authority a", "WHERE a.authority_id = 3"] },
+      { "title": "Availability guard", "text": "Officer C is available, so the row survives. For an unavailable officer the SELECT returns nothing and no assignment is created, without raising an error.", "tables": ["authority"], "r": { "authority": [3] }, "c": { "authority": ["available"] }, "h": ["a.available = TRUE"] },
+      { "title": "Check foreign keys", "text": "Incident 4 and authority 3 both exist.", "tables": ["response_assignment", "incident", "authority"], "r": { "incident": [4], "authority": [3] }, "h": ["INSERT INTO response_assignment", "SELECT 4"] },
+      { "title": "Write the row", "text": "The assignment starts with status assigned and assigned_at set to NOW().", "tables": ["response_assignment"], "h": ["INSERT INTO response_assignment"], "ops": [{ "op": "ins", "t": "response_assignment", "row": [5, 4, 3, "now", "assigned", null] }] }
+    ]
+  },
+  {
+    "cat": "CRUD",
+    "title": "Read: officers with their zones",
+    "sql": [
+      "SELECT a.authority_name, a.role, a.available,",
+      "       z.zone_name",
+      "FROM authority a",
+      "JOIN zones z ON z.zone_id = a.assigned_zone_id",
+      "ORDER BY z.zone_name, a.authority_name;"
+    ],
+    "steps": [
+      { "title": "Scan authority", "text": "Every authority row is read, the left side of the join.", "tables": ["authority"], "r": { "authority": [1, 2, 3, 4] }, "h": ["FROM authority a"] },
+      { "title": "Join on zone", "text": "For each row, the zone whose zone_id equals assigned_zone_id is looked up.", "tables": ["authority", "zones"], "r": { "authority": [1, 2, 3, 4], "zones": [1, 2] }, "c": { "authority": ["assigned_zone_id"], "zones": ["zone_id"] }, "h": ["JOIN zones z"] },
+      { "title": "Project and sort", "text": "Only the selected columns are returned, ordered by zone name and then officer name.", "tables": ["authority", "zones"], "c": { "authority": ["authority_name", "role", "available"], "zones": ["zone_name"] }, "h": ["SELECT a.authority_name", "ORDER BY"], "res": { "cols": ["authority_name", "role", "available", "zone_name"], "rows": [["Manager D", "regional_manager", "true", "North Zone"], ["Officer A", "field_officer", "true", "North Zone"], ["Officer C", "field_officer", "true", "North Zone"], ["Officer B", "field_officer", "false", "South Zone"]] } }
+    ]
+  },
+  {
+    "cat": "CRUD",
+    "title": "Update: verify an incident",
+    "sql": [
+      "UPDATE incident",
+      "SET status = 'verified',",
+      "    verified_at = NOW(),",
+      "    verified_by = 3",
+      "WHERE incident_id = 4",
+      "  AND status = 'reported';"
+    ],
+    "steps": [
+      { "title": "Locate the row", "text": "The primary key index finds incident 4 directly.", "tables": ["incident"], "r": { "incident": [4] }, "c": { "incident": ["incident_id"] }, "h": ["WHERE incident_id = 4"] },
+      { "title": "Guard on status", "text": "The extra status check keeps the update idempotent: incident 4 is still reported so it passes, and running the statement again would touch zero rows.", "tables": ["incident"], "r": { "incident": [4] }, "c": { "incident": ["status"] }, "h": ["AND status = 'reported'"] },
+      { "title": "Write the new version", "text": "PostgreSQL stores a new row version with status, verified_at and verified_by changed. Other columns and rows are untouched.", "tables": ["incident"], "h": ["SET status", "verified_at", "verified_by"], "ops": [{ "op": "upd", "t": "incident", "pk": 4, "set": { "status": "verified", "verified_at": "now", "verified_by": 3 } }] }
+    ]
+  },
+  {
+    "cat": "CRUD",
+    "title": "Update: officer goes off duty with history",
+    "tag": "CTE",
+    "sql": [
+      "WITH off_duty AS (",
+      "  UPDATE authority",
+      "  SET available = FALSE",
+      "  WHERE authority_id = 1",
+      "  RETURNING authority_id, assigned_zone_id,",
+      "            current_location, available",
+      ")",
+      "INSERT INTO authority_history (",
+      "  authority_id, assigned_zone_id, location, available)",
+      "SELECT authority_id, assigned_zone_id,",
+      "       current_location, available",
+      "FROM off_duty;"
+    ],
+    "steps": [
+      { "title": "Update the officer", "text": "available changes from true to false for authority 1.", "tables": ["authority"], "r": { "authority": [1] }, "h": ["UPDATE authority", "SET available = FALSE", "WHERE authority_id = 1"], "ops": [{ "op": "upd", "t": "authority", "pk": 1, "set": { "available": "false" } }] },
+      { "title": "Return the new state", "text": "RETURNING exposes the updated row to the outer INSERT, so the snapshot always matches what was just written.", "tables": ["authority", "authority_history"], "r": { "authority": [1] }, "c": { "authority": ["assigned_zone_id", "current_location", "available"] }, "h": ["RETURNING authority_id"] },
+      { "title": "Append the snapshot", "text": "A history row records the officer, zone, location and availability. The schema has no history trigger, so doing it in one statement keeps both tables consistent.", "tables": ["authority", "authority_history"], "h": ["INSERT INTO authority_history", "FROM off_duty"], "ops": [{ "op": "ins", "t": "authority_history", "row": [2, 1, 1, "78.46 17.46", "false", "now"] }] }
+    ]
+  },
+  {
+    "cat": "CRUD",
+    "title": "Delete: incident with cascade",
+    "sql": [
+      "DELETE FROM incident",
+      "WHERE incident_id = 1;"
+    ],
+    "steps": [
+      { "title": "Mark the parent", "text": "Incident 1 is located and marked for removal.", "tables": ["incident"], "h": ["DELETE FROM incident", "WHERE incident_id = 1"], "ops": [{ "op": "del", "t": "incident", "pks": [1] }] },
+      { "title": "Cascade to conflicts", "text": "ON DELETE CASCADE removes human_wildlife_conflict rows that reference incident 1.", "tables": ["incident", "human_wildlife_conflict"], "h": ["DELETE FROM incident"], "ops": [{ "op": "del", "t": "human_wildlife_conflict", "pks": [1] }] },
+      { "title": "Cascade to assignments", "text": "response_assignment rows for the incident are removed next.", "tables": ["incident", "response_assignment"], "h": ["DELETE FROM incident"], "ops": [{ "op": "del", "t": "response_assignment", "pks": [1] }] },
+      { "title": "Cascade to actions", "text": "Actions belonging to the removed assignment go with it.", "tables": ["response_assignment", "response_action"], "h": ["DELETE FROM incident"], "ops": [{ "op": "del", "t": "response_action", "pks": [1] }] },
+      { "title": "Cascade to alerts", "text": "incident_alert also cascades from incident, so the alert sent for this incident is removed. The deletion is complete.", "tables": ["incident", "incident_alert"], "h": ["DELETE FROM incident"], "ops": [{ "op": "del", "t": "incident_alert", "pks": [1] }] }
+    ]
+  },
+  {
+    "cat": "CRUD",
+    "title": "Delete: blocked by RESTRICT",
+    "sql": [
+      "DELETE FROM authority",
+      "WHERE authority_id = 1;"
+    ],
+    "steps": [
+      { "title": "Locate the row", "text": "Authority 1 is found by primary key.", "tables": ["authority"], "r": { "authority": [1] }, "h": ["DELETE FROM authority", "WHERE authority_id = 1"] },
+      { "title": "Check references", "text": "response_assignment.assigned_to and response_action.performed_by both use ON DELETE RESTRICT, and rows in each still point to authority 1.", "tables": ["authority", "response_assignment", "response_action"], "r": { "authority": [1], "response_assignment": [1], "response_action": [1] }, "c": { "response_assignment": ["assigned_to"], "response_action": ["performed_by"] }, "h": ["DELETE FROM authority"] },
+      { "title": "Statement fails", "text": "PostgreSQL raises a foreign key violation and cancels the statement. Every table stays exactly as it was, even though incident.verified_by would have used SET NULL.", "tables": ["authority", "response_assignment", "response_action"], "s": { "authority": [1], "response_assignment": [1], "response_action": [1] }, "h": ["DELETE FROM authority"] }
+    ]
+  }
+]
