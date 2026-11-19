@@ -228,7 +228,7 @@ export default function App() {
       </aside>
 
       <main
-        className="relative min-w-0 overflow-hidden cursor-grab active:cursor-grabbing touch-none select-none bg-canvas bg-[radial-gradient(#d3d8ea_1.2px,transparent_1.2px)]"
+        className="relative min-w-0 overflow-hidden cursor-grab active:cursor-grabbing touch-none select-none bg-canvas"
         ref={canvas.ref}
         {...canvas.bind}
         style={{

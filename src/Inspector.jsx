@@ -4,6 +4,7 @@ import Sql from './Sql';
 import { CAT_META } from './meta';
 import { joinsFor } from './schema';
 import { cx } from './ui';
+import Compare from './Compare';
 
 const CHIP = {
   flow: 'bg-ac-soft text-ac-ink',
@@ -170,6 +171,7 @@ export default function Inspector({ mode, query, base, qi, ci, setCi, si, setSi,
         </header>
 
         {base.cases && <CaseTabs cases={base.cases} ci={ci} onPick={setCi} />}
+        {base.compare && <Compare base={base} ci={ci} />}
 
         <Sql code={query.sql} hl={step.h} />
         {showData && <Funnel query={query} si={si} setSi={setSi} />}

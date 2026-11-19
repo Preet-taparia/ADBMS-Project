@@ -1,0 +1,298 @@
+[
+  {
+    "cat": "Queries",
+    "title": "Q1 Top species in conflicts",
+    "tag": "PRE AGG",
+    "compare": {
+          "timing": { "before": 184203.5, "after": 41.2 },
+
+      "verdict": "The optimized version counts conflicts per animal first, so the joins to animal and species run on 3 summary rows instead of every conflict row.",
+      "rows": [
+        { "aspect": "Join input", "before": "4 conflict rows joined to animal and species", "after": "3 per animal groups joined to animal and species" },
+        { "aspect": "Aggregation", "before": "One GROUP BY after both joins", "after": "COUNT per animal, then SUM per species" },
+        { "aspect": "NULL animals", "before": "Dropped by the inner join", "after": "Filtered before grouping" },
+        { "aspect": "Scaling", "before": "Join work grows with total conflicts", "after": "Join work grows with distinct animals" }
+      ]
+    },
+    "cases": [
+      {
+        "label": "Unoptimized",
+        "sql": [
+          "SELECT sp.species_id, sp.common_name, sp.threat_level,",
+          "       COUNT(*) AS conflict_count",
+          "FROM human_wildlife_conflict h",
+          "JOIN animal a ON a.animal_id = h.animal_id",
+          "JOIN species sp ON sp.species_id = a.species_id",
+          "GROUP BY sp.species_id, sp.common_name, sp.threat_level",
+          "ORDER BY conflict_count DESC, sp.species_id ASC",
+          "LIMIT 10;"
+        ],
+        "steps": [
+          { "title": "Join conflicts to animals", "text": "Every conflict row is matched to its animal. All 4 rows survive.", "tables": ["human_wildlife_conflict", "animal"], "r": { "human_wildlife_conflict": [1, 2, 3, 4], "animal": [1, 3, 4] }, "s": { "animal": [2] }, "c": { "human_wildlife_conflict": ["animal_id"], "animal": ["animal_id"] }, "f": 4, "h": ["JOIN animal a"] },
+          { "title": "Join species per conflict row", "text": "The species lookup runs for all 4 conflict rows, even though animal 1 appears twice.", "tables": ["animal", "species"], "r": { "animal": [1, 3, 4], "species": [1, 3] }, "c": { "animal": ["species_id"], "species": ["species_id"] }, "f": 4, "h": ["JOIN species sp"] },
+          { "title": "Group and rank", "text": "Rows are grouped by species after both joins. Leopards have 3 conflicts and tigers 1.", "tables": ["species"], "r": { "species": [1, 3] }, "f": 2, "h": ["COUNT(*)", "GROUP BY", "ORDER BY", "LIMIT 10"], "res": { "cols": ["species_id", "common_name", "threat_level", "conflict_count"], "rows": [[1, "Indian Leopard", "vulnerable", 3], [3, "Bengal Tiger", "endangered", 1]] } }
+        ]
+      },
+      {
+        "label": "Optimized",
+        "sql": [
+          "WITH animal_conflicts AS (",
+          "    SELECT animal_id, COUNT(*) AS conflict_cnt",
+          "    FROM human_wildlife_conflict",
+          "    WHERE animal_id IS NOT NULL",
+          "    GROUP BY animal_id",
+          ")",
+          "SELECT sp.species_id, sp.common_name, sp.threat_level,",
+          "       SUM(ac.conflict_cnt)::bigint AS conflict_count",
+          "FROM animal_conflicts ac",
+          "JOIN animal a ON a.animal_id = ac.animal_id",
+          "JOIN species sp ON sp.species_id = a.species_id",
+          "GROUP BY sp.species_id, sp.common_name, sp.threat_level",
+          "ORDER BY conflict_count DESC, sp.species_id ASC",
+          "LIMIT 10;"
+        ],
+        "steps": [
+          { "title": "Count per animal first", "text": "Conflicts are grouped by animal_id before any join. NULL animals are filtered here. 4 rows collapse to 3 groups: animal 1 has 2, animals 3 and 4 have 1 each.", "tables": ["human_wildlife_conflict"], "r": { "human_wildlife_conflict": [1, 2, 3, 4] }, "c": { "human_wildlife_conflict": ["animal_id"] }, "f": 3, "h": ["WITH animal_conflicts", "WHERE animal_id IS NOT NULL", "GROUP BY animal_id"] },
+          { "title": "Join the groups to animal", "text": "Only 3 summary rows are looked up in animal.", "tables": ["human_wildlife_conflict", "animal"], "r": { "animal": [1, 3, 4] }, "c": { "animal": ["animal_id"] }, "f": 3, "h": ["JOIN animal a"] },
+          { "title": "Join species", "text": "Species is resolved once per animal group instead of once per conflict.", "tables": ["animal", "species"], "r": { "animal": [1, 3, 4], "species": [1, 3] }, "c": { "animal": ["species_id"], "species": ["species_id"] }, "f": 3, "h": ["JOIN species sp"] },
+          { "title": "Roll up to species", "text": "SUM adds the per animal counts. Animals 1 and 4 are both leopards, giving 3.", "tables": ["species"], "r": { "species": [1, 3] }, "f": 2, "h": ["SUM(ac.conflict_cnt)", "GROUP BY sp.species_id", "ORDER BY", "LIMIT 10"], "res": { "cols": ["species_id", "common_name", "threat_level", "conflict_count"], "rows": [[1, "Indian Leopard", "vulnerable", 3], [3, "Bengal Tiger", "endangered", 1]] } }
+        ]
+      }
+    ]
+  },
+  {
+    "cat": "Queries",
+    "title": "Q2 Nearest active incidents to an officer",
+    "tag": "KNN",
+    "compare": {
+          "timing": { "before": 184203.5, "after": 41.2 },
+
+      "verdict": "The optimized version asks the spatial index for the nearest candidates in distance order, instead of measuring every active incident and sorting them all.",
+      "rows": [
+        { "aspect": "Ordering", "before": "ORDER BY ST_Distance, which cannot use the spatial index", "after": "ORDER BY the <-> operator, which can use a GiST nearest neighbour scan" },
+        { "aspect": "Rows examined", "before": "Every active incident", "after": "At most 15 candidates" },
+        { "aspect": "Final step", "before": "Sort all rows, keep 3", "after": "Exact distance sort on 15 rows, keep 3" },
+        { "aspect": "Scaling", "before": "Grows with active incidents", "after": "Stays near the candidate cap" }
+      ]
+    },
+    "cases": [
+      {
+        "label": "Unoptimized",
+        "sql": [
+          "SELECT i.incident_id, i.severity, i.status,",
+          "       ROUND(ST_Distance(i.location, a.current_location)::numeric, 2) AS distance_meters",
+          "FROM authority a",
+          "JOIN incident i",
+          "  ON i.status IN ('reported', 'verified', 'in_progress')",
+          "WHERE a.authority_id = 1",
+          "ORDER BY ST_Distance(i.location, a.current_location) ASC, i.incident_id ASC",
+          "LIMIT 3;"
+        ],
+        "steps": [
+          { "title": "Pick the officer", "text": "Authority 1 supplies the reference point.", "tables": ["authority", "incident"], "r": { "authority": [1] }, "c": { "authority": ["current_location"] }, "f": 1, "h": ["WHERE a.authority_id = 1"] },
+          { "title": "Pair with every active incident", "text": "The join has no spatial condition, so the officer is paired with all active incidents. Incidents 2 and 5 are resolved and dropped.", "tables": ["authority", "incident"], "r": { "authority": [1], "incident": [1, 3, 4] }, "s": { "incident": [2, 5] }, "c": { "incident": ["status"] }, "f": 3, "h": ["ON i.status IN"] },
+          { "title": "Measure and sort everything", "text": "ST_Distance is computed for every pair and the whole set is sorted. The index cannot help with this ordering.", "tables": ["authority", "incident"], "r": { "incident": [1, 3, 4] }, "c": { "incident": ["location"] }, "f": 3, "h": ["ORDER BY ST_Distance"] },
+          { "title": "Keep three", "text": "LIMIT 3 trims the sorted rows.", "tables": ["incident"], "r": { "incident": [1, 3, 4] }, "f": 3, "h": ["LIMIT 3"], "res": { "cols": ["incident_id", "severity", "status", "distance_meters"], "rows": [[1, "high", "in_progress", 1536.42], [3, "critical", "verified", 3953.4], [4, "medium", "reported", 4447.8]] } }
+        ]
+      },
+      {
+        "label": "Optimized",
+        "sql": [
+          "SELECT i.incident_id, i.severity, i.status,",
+          "       ROUND(ST_Distance(i.location, a.current_location)::numeric, 2) AS distance_meters",
+          "FROM authority a",
+          "CROSS JOIN LATERAL (",
+          "    SELECT inc.incident_id, inc.severity, inc.status, inc.location",
+          "    FROM incident inc",
+          "    WHERE inc.status IN ('reported', 'verified', 'in_progress')",
+          "    ORDER BY inc.location <-> a.current_location",
+          "    LIMIT 15",
+          ") i",
+          "WHERE a.authority_id = 1",
+          "ORDER BY ST_Distance(i.location, a.current_location) ASC, i.incident_id ASC",
+          "LIMIT 3;"
+        ],
+        "steps": [
+          { "title": "Pick the officer", "text": "Authority 1 supplies the reference point for the lateral subquery.", "tables": ["authority", "incident"], "r": { "authority": [1] }, "c": { "authority": ["current_location"] }, "f": 1, "h": ["WHERE a.authority_id = 1"] },
+          { "title": "Nearest candidates from the index", "text": "The subquery walks the spatial index in distance order and stops after 15 rows. The sample has only 3 active incidents, so all 3 are returned.", "tables": ["authority", "incident"], "r": { "authority": [1], "incident": [1, 3, 4] }, "s": { "incident": [2, 5] }, "c": { "incident": ["status", "location"] }, "f": 3, "h": ["CROSS JOIN LATERAL", "ORDER BY inc.location <-> a.current_location", "LIMIT 15"] },
+          { "title": "Exact re sort", "text": "Exact distance is computed only for the candidates and they are sorted precisely.", "tables": ["incident"], "r": { "incident": [1, 3, 4] }, "c": { "incident": ["location"] }, "f": 3, "h": ["ROUND(ST_Distance", "ORDER BY ST_Distance"] },
+          { "title": "Keep three", "text": "LIMIT 3 returns the closest incidents.", "tables": ["incident"], "r": { "incident": [1, 3, 4] }, "f": 3, "h": ["LIMIT 3"], "res": { "cols": ["incident_id", "severity", "status", "distance_meters"], "rows": [[1, "high", "in_progress", 1536.42], [3, "critical", "verified", 3953.4], [4, "medium", "reported", 4447.8]] } }
+        ]
+      }
+    ]
+  },
+  {
+    "cat": "Queries",
+    "title": "Q3 Zone risk ranking",
+    "tag": "PRE AGG",
+    "compare": {
+          "timing": { "before": 184203.5, "after": 41.2 },
+
+      "verdict": "The optimized version counts incidents once in a small summary and joins that to zones, so the zone join no longer fans out to every incident row.",
+      "rows": [
+        { "aspect": "Join input", "before": "2 zones joined to 5 incident rows", "after": "2 zones joined to 2 summary rows" },
+        { "aspect": "Grouping", "before": "GROUP BY zone_id and zone_name after the join", "after": "GROUP BY zone_id on incident alone" },
+        { "aspect": "Empty zones", "before": "COUNT of the right side gives 0", "after": "COALESCE turns NULL into 0" },
+        { "aspect": "Ranking", "before": "Window over an aggregate expression", "after": "Window over a plain column" }
+      ]
+    },
+    "cases": [
+      {
+        "label": "Unoptimized",
+        "sql": [
+          "SELECT z.zone_id, z.zone_name,",
+          "       COUNT(i.incident_id) AS total_incidents,",
+          "       DENSE_RANK() OVER (ORDER BY COUNT(i.incident_id) DESC) AS risk_rank",
+          "FROM zones z",
+          "LEFT JOIN incident i ON i.zone_id = z.zone_id",
+          "GROUP BY z.zone_id, z.zone_name",
+          "ORDER BY risk_rank ASC, z.zone_id ASC;"
+        ],
+        "steps": [
+          { "title": "Join every incident", "text": "Each zone is joined to its incident rows. Zone 1 gets 3 rows and zone 2 gets 2, so 5 joined rows exist.", "tables": ["zones", "incident"], "r": { "zones": [1, 2], "incident": [1, 2, 3, 4, 5] }, "c": { "zones": ["zone_id"], "incident": ["zone_id"] }, "f": 5, "h": ["LEFT JOIN incident i"] },
+          { "title": "Group and count", "text": "The 5 joined rows are grouped back into 2 zones.", "tables": ["zones", "incident"], "f": 2, "h": ["COUNT(i.incident_id) AS total_incidents", "GROUP BY z.zone_id"] },
+          { "title": "Rank", "text": "DENSE_RANK orders zones by the count expression.", "tables": ["zones"], "f": 2, "h": ["DENSE_RANK()", "ORDER BY risk_rank"], "res": { "cols": ["zone_id", "zone_name", "total_incidents", "risk_rank"], "rows": [[1, "North Zone", 3, 1], [2, "South Zone", 2, 2]] } }
+        ]
+      },
+      {
+        "label": "Optimized",
+        "sql": [
+          "WITH zone_incident_counts AS (",
+          "    SELECT zone_id, COUNT(*) AS total_incidents",
+          "    FROM incident",
+          "    GROUP BY zone_id",
+          ")",
+          "SELECT z.zone_id, z.zone_name,",
+          "       COALESCE(zic.total_incidents, 0) AS total_incidents,",
+          "       DENSE_RANK() OVER (ORDER BY COALESCE(zic.total_incidents, 0) DESC) AS risk_rank",
+          "FROM zones z",
+          "LEFT JOIN zone_incident_counts zic ON zic.zone_id = z.zone_id",
+          "ORDER BY risk_rank ASC, z.zone_id ASC;"
+        ],
+        "steps": [
+          { "title": "Count incidents per zone", "text": "Incident is scanned once and grouped by zone_id. 5 rows become 2 summary rows.", "tables": ["incident"], "r": { "incident": [1, 2, 3, 4, 5] }, "c": { "incident": ["zone_id"] }, "f": 2, "h": ["WITH zone_incident_counts", "GROUP BY zone_id"] },
+          { "title": "Join the summary", "text": "Zones are joined to 2 summary rows instead of 5 incident rows. A zone with no incidents would still appear.", "tables": ["zones"], "r": { "zones": [1, 2] }, "c": { "zones": ["zone_id"] }, "f": 2, "h": ["LEFT JOIN zone_incident_counts zic", "COALESCE(zic.total_incidents, 0) AS"] },
+          { "title": "Rank", "text": "DENSE_RANK works on a plain column, so no group is needed after the join.", "tables": ["zones"], "f": 2, "h": ["DENSE_RANK()", "ORDER BY risk_rank"], "res": { "cols": ["zone_id", "zone_name", "total_incidents", "risk_rank"], "rows": [[1, "North Zone", 3, 1], [2, "South Zone", 2, 2]] } }
+        ]
+      }
+    ]
+  },
+  {
+    "cat": "Queries",
+    "title": "Q4 Users near an active incident",
+    "tag": "LATERAL",
+    "compare": {
+          "timing": { "before": 184203.5, "after": 41.2 },
+
+      "verdict": "The optimized version tests each user against incidents with ST_DWithin and stops at the nearest one, instead of measuring every user and incident pair and then deduplicating.",
+      "rows": [
+        { "aspect": "Pairs tested", "before": "Every user against every active incident, 9 here", "after": "Per user index search within 2000 m" },
+        { "aspect": "Distance test", "before": "ST_Distance <= 2000, which cannot use the spatial index", "after": "ST_DWithin, which can use the GiST index" },
+        { "aspect": "Nearest per user", "before": "DISTINCT ON after sorting all matching pairs", "after": "ORDER BY with LIMIT 1 inside the lateral" },
+        { "aspect": "Users with no match", "before": "Never produced", "after": "Dropped by CROSS JOIN LATERAL" }
+      ]
+    },
+    "cases": [
+      {
+        "label": "Unoptimized",
+        "sql": [
+          "SELECT *",
+          "FROM (",
+          "    SELECT DISTINCT ON (u.user_id)",
+          "        u.user_id, u.full_name, u.phone, i.incident_id, i.severity,",
+          "        ROUND(ST_Distance(u.current_location, i.location)::numeric, 2) AS distance_meters",
+          "    FROM users u",
+          "    JOIN incident i",
+          "      ON i.status IN ('reported', 'verified', 'in_progress')",
+          "     AND ST_Distance(u.current_location, i.location) <= 2000",
+          "    ORDER BY u.user_id, ST_Distance(u.current_location, i.location) ASC, i.incident_id ASC",
+          ") nearest",
+          "ORDER BY distance_meters ASC, user_id ASC;"
+        ],
+        "steps": [
+          { "title": "Pair users with active incidents", "text": "3 users are paired with the 3 active incidents, giving 9 candidate pairs. Incidents 2 and 5 are resolved.", "tables": ["users", "incident"], "r": { "users": [1, 2, 3], "incident": [1, 3, 4] }, "s": { "incident": [2, 5] }, "c": { "incident": ["status"] }, "f": 9, "h": ["JOIN incident i", "ON i.status IN"] },
+          { "title": "Measure every pair", "text": "ST_Distance runs on all 9 pairs. Only user 3 with incidents 1 and 3 is within 2000 m.", "tables": ["users", "incident"], "r": { "users": [3], "incident": [1, 3] }, "s": { "users": [1, 2], "incident": [4] }, "c": { "users": ["current_location"], "incident": ["location"] }, "f": 2, "h": ["ST_Distance(u.current_location, i.location) <= 2000"] },
+          { "title": "DISTINCT ON keeps the nearest", "text": "Pairs are sorted by user and distance, and DISTINCT ON keeps the first row per user, which is incident 1.", "tables": ["users", "incident"], "r": { "users": [3], "incident": [1] }, "f": 1, "h": ["DISTINCT ON (u.user_id)", "ORDER BY u.user_id"], "res": { "cols": ["user_id", "full_name", "phone", "incident_id", "severity", "distance_meters"], "rows": [[3, "Meena Iyer", "9000000003", 1, "high", 1110.38]] } }
+        ]
+      },
+      {
+        "label": "Optimized",
+        "sql": [
+          "SELECT u.user_id, u.full_name, u.phone, n.incident_id, n.severity,",
+          "       ROUND(n.distance_m::numeric, 2) AS distance_meters",
+          "FROM users u",
+          "CROSS JOIN LATERAL (",
+          "    SELECT i.incident_id, i.severity,",
+          "           ST_Distance(i.location, u.current_location) AS distance_m",
+          "    FROM incident i",
+          "    WHERE i.status IN ('reported', 'verified', 'in_progress')",
+          "      AND ST_DWithin(i.location, u.current_location, 2000)",
+          "    ORDER BY ST_Distance(i.location, u.current_location) ASC, i.incident_id ASC",
+          "    LIMIT 1",
+          ") n",
+          "ORDER BY distance_meters ASC, u.user_id ASC;"
+        ],
+        "steps": [
+          { "title": "Take each user", "text": "The lateral subquery runs once for each of the 3 users.", "tables": ["users"], "r": { "users": [1, 2, 3] }, "c": { "users": ["current_location"] }, "f": 3, "h": ["FROM users u", "CROSS JOIN LATERAL"] },
+          { "title": "Index bounded search", "text": "ST_DWithin narrows candidates to incidents within 2000 m of the user. Users 1 and 2 find nothing. User 3 finds incidents 1 and 3.", "tables": ["users", "incident"], "r": { "users": [3], "incident": [1, 3] }, "s": { "users": [1, 2], "incident": [4] }, "c": { "users": ["current_location"], "incident": ["location", "status"] }, "f": 2, "h": ["WHERE i.status IN", "ST_DWithin(i.location, u.current_location, 2000)"] },
+          { "title": "Nearest with LIMIT 1", "text": "Inside the lateral, matches are ordered by distance and cut to the first row. Users with no row disappear from the result.", "tables": ["users", "incident"], "r": { "users": [3], "incident": [1] }, "f": 1, "h": ["ORDER BY ST_Distance", "LIMIT 1"], "res": { "cols": ["user_id", "full_name", "phone", "incident_id", "severity", "distance_meters"], "rows": [[3, "Meena Iyer", "9000000003", 1, "high", 1110.38]] } }
+        ]
+      }
+    ]
+  },
+  {
+    "cat": "Queries",
+    "title": "Q5 Sightings in a zone, last 7 days",
+    "tag": "SAME SQL",
+    "compare": {
+          "timing": { "before": 184203.5, "after": 41.2 },
+
+      "verdict": "Both files contain the same statement, so there is no rewrite to compare. Any speed difference here comes from indexes on sighting, not from the query text.",
+      "rows": [
+        { "aspect": "Query text", "before": "Identical", "after": "Identical" },
+        { "aspect": "Filters", "before": "zone_id = 1 and observed_at within 7 days", "after": "zone_id = 1 and observed_at within 7 days" },
+        { "aspect": "Where gains come from", "before": "Scan or default access path", "after": "Indexes on zone_id and observed_at if present" }
+      ]
+    },
+    "sql": [
+      "SELECT s.animal_id, sp.common_name, s.sighting_id, s.location, s.observed_at",
+      "FROM sighting s",
+      "JOIN animal a ON a.animal_id = s.animal_id",
+      "JOIN species sp ON sp.species_id = a.species_id",
+      "WHERE s.zone_id = 1",
+      "  AND s.observed_at >= NOW() - INTERVAL '7 days'",
+      "ORDER BY s.observed_at DESC, s.sighting_id DESC;"
+    ],
+    "steps": [
+      { "title": "Filter by zone", "text": "Sightings 1, 2, 3 and 6 belong to zone 1. Sightings 4 and 5 are in zone 2. The sample clock is 2026-11-07 06:00.", "tables": ["sighting"], "r": { "sighting": [1, 2, 3, 6] }, "s": { "sighting": [4, 5] }, "c": { "sighting": ["zone_id"] }, "f": 4, "h": ["WHERE s.zone_id = 1"] },
+      { "title": "Filter by time", "text": "Sighting 1 is from October 12 and falls outside the 7 day window.", "tables": ["sighting"], "r": { "sighting": [2, 3, 6] }, "s": { "sighting": [1] }, "c": { "sighting": ["observed_at"] }, "f": 3, "h": ["INTERVAL '7 days'"] },
+      { "title": "Join and sort", "text": "Each sighting is matched to its animal and species and sorted newest first.", "tables": ["sighting", "animal", "species"], "r": { "sighting": [2, 3, 6], "animal": [1, 4], "species": [1] }, "c": { "sighting": ["animal_id"], "animal": ["animal_id", "species_id"], "species": ["species_id"] }, "f": 3, "h": ["JOIN animal a", "JOIN species sp", "ORDER BY s.observed_at DESC"], "res": { "cols": ["animal_id", "common_name", "sighting_id", "location", "observed_at"], "rows": [[4, "Indian Leopard", 6, "78.485 17.485", "2026-11-06 07:10"], [1, "Indian Leopard", 3, "78.48 17.48", "2026-11-05 06:30"], [1, "Indian Leopard", 2, "78.47 17.47", "2026-11-01 18:20"]] } }
+    ]
+  },
+  {
+    "cat": "Queries",
+    "title": "Q6 Incidents in the last 24 hours",
+    "tag": "SAME SQL",
+    "compare": {
+          "timing": { "before": 184203.5, "after": 41.2 },
+
+      "verdict": "Both files contain the same statement. The only possible gain is an index on incident.observed_at, which the query text itself does not change.",
+      "rows": [
+        { "aspect": "Query text", "before": "Identical", "after": "Identical" },
+        { "aspect": "Filter", "before": "observed_at within 24 hours", "after": "observed_at within 24 hours" },
+        { "aspect": "Where gains come from", "before": "Scan or default access path", "after": "Index on observed_at if present" }
+      ]
+    },
+    "sql": [
+      "SELECT incident_id, reported_by, zone_id, severity, status, observed_at",
+      "FROM incident",
+      "WHERE observed_at >= NOW() - INTERVAL '24 hours'",
+      "ORDER BY observed_at DESC, incident_id DESC;"
+    ],
+    "steps": [
+      { "title": "Compute the cutoff", "text": "NOW() minus 24 hours gives 2026-11-06 06:00 on the sample clock.", "tables": ["incident"], "c": { "incident": ["observed_at"] }, "h": ["INTERVAL '24 hours'"] },
+      { "title": "Filter rows", "text": "Only incident 3 is newer than the cutoff. The other four are older.", "tables": ["incident"], "r": { "incident": [3] }, "s": { "incident": [1, 2, 4, 5] }, "c": { "incident": ["observed_at"] }, "f": 1, "h": ["WHERE observed_at >="] },
+      { "title": "Sort newest first", "text": "The surviving row is returned.", "tables": ["incident"], "r": { "incident": [3] }, "f": 1, "h": ["ORDER BY observed_at DESC"], "res": { "cols": ["incident_id", "reported_by", "zone_id", "severity", "status", "observed_at"], "rows": [[3, 1, 1, "critical", "verified", "2026-11-06 08:20"]] } }
+    ]
+  }
+]

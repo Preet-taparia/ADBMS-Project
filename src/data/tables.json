@@ -32,7 +32,8 @@
       [1,"Officer A","9000000011","field_officer",1,"78.46 17.46","true"],
       [2,"Officer B","9000000012","field_officer",2,"78.61 17.31","false"],
       [3,"Officer C","9000000013","field_officer",1,"78.49 17.52","true"],
-      [4,"Manager D","9000000014","regional_manager",1,"78.50 17.50","true"]
+      [4,"Manager D","9000000014","regional_manager",1,"78.50 17.50","true"],
+      [5,"Officer E","9000000015","field_officer",1,"78.48 17.47","true"]
     ]
   },
   "authority_history": {
